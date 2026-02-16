@@ -35,6 +35,10 @@ shared/
 5. Monthly report with spending analytics
 6. Dark mode support
 7. Mobile-optimized bottom navigation
+8. Multi-photo gallery selection with queue processing
+9. Receipt cropping tool (drag-to-select)
+10. PC bulk registration - select multiple files, edit each with form, save individually with receipt image
+11. Receipt image thumbnails in history, full preview in detail dialog
 
 ## API Routes
 - GET/PUT /api/settings - Budget settings

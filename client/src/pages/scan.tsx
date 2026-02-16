@@ -11,7 +11,7 @@ import { queryClient } from "@/lib/queryClient";
 import { CategoryIcon } from "@/components/category-icon";
 import { formatCurrency, getCurrentMonth, getCategoryLabel } from "@/lib/utils";
 import { CATEGORIES } from "@shared/schema";
-import { Camera, Loader2, Check, X, ImageIcon, ReceiptText, ChevronLeft, ChevronRight, Crop } from "lucide-react";
+import { Camera, Loader2, Check, X, ImageIcon, ReceiptText, ChevronLeft, ChevronRight, Crop, FolderOpen, Monitor, ArrowLeft } from "lucide-react";
 import { useLocation } from "wouter";
 
 interface AnalysisResult {
@@ -29,6 +29,15 @@ interface QueueItem {
   status: "pending" | "analyzing" | "ready" | "failed" | "saved";
 }
 
+interface BulkItem {
+  id: number;
+  image: string;
+  fileName: string;
+  data: AnalysisResult;
+  status: "editing" | "saving" | "saved";
+  expanded: boolean;
+}
+
 export default function ScanPage() {
   const [queue, setQueue] = useState<QueueItem[]>([]);
   const [currentIndex, setCurrentIndex] = useState(0);
@@ -37,6 +46,10 @@ export default function ScanPage() {
   const [cropStart, setCropStart] = useState<{ x: number; y: number } | null>(null);
   const [cropEnd, setCropEnd] = useState<{ x: number; y: number } | null>(null);
   const [pendingCropImage, setPendingCropImage] = useState<string | null>(null);
+  const [pcBulkMode, setPcBulkMode] = useState(false);
+  const [bulkItems, setBulkItems] = useState<BulkItem[]>([]);
+  const [bulkPreviewImage, setBulkPreviewImage] = useState<string | null>(null);
+  const pcFileInputRef = useRef<HTMLInputElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const cameraInputRef = useRef<HTMLInputElement>(null);
   const cropCanvasRef = useRef<HTMLCanvasElement>(null);
@@ -348,6 +361,354 @@ export default function ScanPage() {
 
   const handleTouchEnd = () => {};
 
+  const handlePcBulkSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = e.target.files;
+    if (!files || files.length === 0) return;
+    const today = new Date().toISOString().split("T")[0];
+    const newItems: BulkItem[] = [];
+    for (let i = 0; i < files.length; i++) {
+      try {
+        const base64 = await resizeImage(files[i]);
+        newItems.push({
+          id: Date.now() + i,
+          image: base64,
+          fileName: files[i].name,
+          data: { storeName: "", amount: 0, category: "etc", date: today, memo: "" },
+          status: "editing",
+          expanded: false,
+        });
+      } catch {
+        // skip
+      }
+    }
+    e.target.value = "";
+    if (newItems.length === 0) {
+      toast({ title: "파일 없음", description: "이미지 파일을 선택해주세요.", variant: "destructive" });
+      return;
+    }
+    setBulkItems((prev) => {
+      const combined = [...prev, ...newItems];
+      const hasExpanded = combined.some((b) => b.expanded && b.status === "editing");
+      if (!hasExpanded && newItems.length > 0) {
+        const firstNewIdx = combined.findIndex((b) => b.id === newItems[0].id);
+        combined[firstNewIdx] = { ...combined[firstNewIdx], expanded: true };
+      }
+      return combined;
+    });
+    toast({ title: `${newItems.length}장 추가 완료`, description: "각 영수증 정보를 입력 후 저장하세요." });
+  };
+
+  const updateBulkItem = (id: number, field: string, value: string | number) => {
+    setBulkItems((prev) =>
+      prev.map((item) =>
+        item.id === id ? { ...item, data: { ...item.data, [field]: value } } : item
+      )
+    );
+  };
+
+  const toggleBulkExpand = (id: number) => {
+    setBulkItems((prev) =>
+      prev.map((item) =>
+        item.id === id ? { ...item, expanded: !item.expanded } : item
+      )
+    );
+  };
+
+  const saveBulkItem = async (id: number) => {
+    const item = bulkItems.find((b) => b.id === id);
+    if (!item) return;
+    if (!item.data.storeName || item.data.amount <= 0) {
+      toast({ title: "입력 확인", description: "가게 이름과 금액을 입력해주세요.", variant: "destructive" });
+      return;
+    }
+    setBulkItems((prev) =>
+      prev.map((b) => (b.id === id ? { ...b, status: "saving" as const } : b))
+    );
+    try {
+      const { month, year } = getCurrentMonth();
+      await apiRequest("POST", "/api/expenses", {
+        ...item.data,
+        receiptImage: item.image,
+        month,
+        year,
+      });
+      queryClient.invalidateQueries({ queryKey: ["/api/expenses"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/budgets"] });
+      setBulkItems((prev) => {
+        const updated = prev.map((b) =>
+          b.id === id ? { ...b, status: "saved" as const, expanded: false } : b
+        );
+        const remaining = updated.filter((b) => b.status !== "saved");
+        if (remaining.length > 0 && !remaining[0].expanded) {
+          return updated.map((b) =>
+            b.id === remaining[0].id ? { ...b, expanded: true } : b
+          );
+        }
+        return updated;
+      });
+      toast({ title: "저장 완료" });
+    } catch {
+      setBulkItems((prev) =>
+        prev.map((b) => (b.id === id ? { ...b, status: "editing" as const } : b))
+      );
+      toast({ title: "저장 실패", description: "다시 시도해주세요.", variant: "destructive" });
+    }
+  };
+
+  const removeBulkItem = (id: number) => {
+    setBulkItems((prev) => prev.filter((b) => b.id !== id));
+  };
+
+  const bulkSavedCount = bulkItems.filter((b) => b.status === "saved").length;
+  const bulkAllDone = bulkItems.length > 0 && bulkSavedCount === bulkItems.length;
+
+  if (pcBulkMode) {
+    return (
+      <div className="p-4 space-y-4 max-w-4xl mx-auto pb-24">
+        <div className="flex items-center gap-3">
+          <Button
+            size="icon"
+            variant="ghost"
+            onClick={() => { setPcBulkMode(false); setBulkItems([]); setBulkPreviewImage(null); }}
+            data-testid="button-bulk-back"
+          >
+            <ArrowLeft className="w-5 h-5" />
+          </Button>
+          <div className="flex-1 min-w-0">
+            <h1 className="text-xl font-bold" data-testid="text-bulk-title">PC 일괄 등록</h1>
+            {bulkItems.length > 0 && (
+              <p className="text-xs text-muted-foreground">
+                {bulkSavedCount}/{bulkItems.length} 저장 완료
+              </p>
+            )}
+          </div>
+          {!bulkAllDone && (
+            <Button
+              variant="secondary"
+              onClick={() => pcFileInputRef.current?.click()}
+              data-testid="button-bulk-add-more"
+            >
+              <FolderOpen className="w-4 h-4 mr-1.5" />
+              파일 추가
+            </Button>
+          )}
+        </div>
+
+        <input
+          ref={pcFileInputRef}
+          type="file"
+          accept="image/*"
+          multiple
+          className="hidden"
+          onChange={handlePcBulkSelect}
+          data-testid="input-pc-bulk"
+        />
+
+        {bulkItems.length === 0 && (
+          <Card
+            className="hover-elevate cursor-pointer"
+            onClick={() => pcFileInputRef.current?.click()}
+          >
+            <CardContent className="p-12 flex flex-col items-center gap-4">
+              <div className="w-20 h-20 rounded-full bg-primary/10 flex items-center justify-center">
+                <FolderOpen className="w-9 h-9 text-primary" />
+              </div>
+              <div className="text-center space-y-1">
+                <p className="font-semibold">폴더에서 영수증 사진 선택</p>
+                <p className="text-sm text-muted-foreground">
+                  여러 파일을 한 번에 선택할 수 있습니다
+                </p>
+                <p className="text-xs text-muted-foreground">
+                  Ctrl+A로 전체 선택 가능
+                </p>
+              </div>
+            </CardContent>
+          </Card>
+        )}
+
+        {bulkPreviewImage && (
+          <div
+            className="fixed inset-0 z-50 bg-black/80 flex items-center justify-center p-4"
+            onClick={() => setBulkPreviewImage(null)}
+          >
+            <div className="relative max-w-3xl max-h-[90vh]">
+              <img
+                src={bulkPreviewImage}
+                alt="영수증 미리보기"
+                className="max-w-full max-h-[85vh] object-contain rounded-lg"
+                data-testid="img-bulk-preview"
+              />
+              <Button
+                size="icon"
+                variant="secondary"
+                className="absolute top-2 right-2"
+                onClick={() => setBulkPreviewImage(null)}
+              >
+                <X className="w-4 h-4" />
+              </Button>
+            </div>
+          </div>
+        )}
+
+        {bulkItems.length > 0 && (
+          <div className="space-y-3">
+            {bulkItems.map((item, idx) => (
+              <Card
+                key={item.id}
+                className={item.status === "saved" ? "opacity-60" : ""}
+                data-testid={`bulk-item-${idx}`}
+              >
+                <CardContent className="p-0">
+                  <button
+                    className="w-full p-3 flex items-center gap-3 text-left"
+                    onClick={() => item.status !== "saved" && toggleBulkExpand(item.id)}
+                    data-testid={`bulk-toggle-${idx}`}
+                  >
+                    <img
+                      src={item.image}
+                      alt={item.fileName}
+                      className="w-14 h-14 object-cover rounded-md bg-muted flex-shrink-0 cursor-pointer"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setBulkPreviewImage(item.image);
+                      }}
+                      data-testid={`bulk-thumb-${idx}`}
+                    />
+                    <div className="flex-1 min-w-0">
+                      <p className="text-sm font-medium truncate">{item.fileName}</p>
+                      {item.data.storeName ? (
+                        <p className="text-xs text-muted-foreground truncate">
+                          {item.data.storeName} &middot; {item.data.amount > 0 ? formatCurrency(item.data.amount) : "금액 미입력"}
+                        </p>
+                      ) : (
+                        <p className="text-xs text-muted-foreground">정보 미입력</p>
+                      )}
+                    </div>
+                    {item.status === "saved" ? (
+                      <div className="flex items-center gap-1 text-primary">
+                        <Check className="w-4 h-4" />
+                        <span className="text-xs font-medium">완료</span>
+                      </div>
+                    ) : item.status === "saving" ? (
+                      <Loader2 className="w-4 h-4 animate-spin text-primary" />
+                    ) : (
+                      <ChevronRight className={`w-4 h-4 text-muted-foreground transition-transform ${item.expanded ? "rotate-90" : ""}`} />
+                    )}
+                  </button>
+
+                  {item.expanded && item.status === "editing" && (
+                    <div className="px-3 pb-3 space-y-3 border-t">
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-3">
+                        <div className="sm:col-span-2 flex gap-3">
+                          <img
+                            src={item.image}
+                            alt={item.fileName}
+                            className="w-32 h-40 object-contain rounded-md bg-muted flex-shrink-0 cursor-pointer"
+                            onClick={() => setBulkPreviewImage(item.image)}
+                          />
+                          <div className="flex-1 space-y-3">
+                            <div>
+                              <Label className="text-xs text-muted-foreground">가게 이름</Label>
+                              <Input
+                                value={item.data.storeName}
+                                onChange={(e) => updateBulkItem(item.id, "storeName", e.target.value)}
+                                placeholder="가게 이름 입력"
+                                data-testid={`bulk-store-${idx}`}
+                              />
+                            </div>
+                            <div>
+                              <Label className="text-xs text-muted-foreground">금액 (원)</Label>
+                              <Input
+                                type="number"
+                                value={item.data.amount || ""}
+                                onChange={(e) => updateBulkItem(item.id, "amount", parseInt(e.target.value) || 0)}
+                                placeholder="금액 입력"
+                                data-testid={`bulk-amount-${idx}`}
+                              />
+                            </div>
+                          </div>
+                        </div>
+                        <div>
+                          <Label className="text-xs text-muted-foreground">카테고리</Label>
+                          <Select
+                            value={item.data.category}
+                            onValueChange={(v) => updateBulkItem(item.id, "category", v)}
+                          >
+                            <SelectTrigger data-testid={`bulk-category-${idx}`}>
+                              <SelectValue />
+                            </SelectTrigger>
+                            <SelectContent>
+                              {CATEGORIES.map((cat) => (
+                                <SelectItem key={cat.value} value={cat.value}>
+                                  {cat.label}
+                                </SelectItem>
+                              ))}
+                            </SelectContent>
+                          </Select>
+                        </div>
+                        <div>
+                          <Label className="text-xs text-muted-foreground">날짜</Label>
+                          <Input
+                            type="date"
+                            value={item.data.date}
+                            onChange={(e) => updateBulkItem(item.id, "date", e.target.value)}
+                            data-testid={`bulk-date-${idx}`}
+                          />
+                        </div>
+                        <div className="sm:col-span-2">
+                          <Label className="text-xs text-muted-foreground">메모</Label>
+                          <Input
+                            value={item.data.memo}
+                            onChange={(e) => updateBulkItem(item.id, "memo", e.target.value)}
+                            placeholder="선택사항"
+                            data-testid={`bulk-memo-${idx}`}
+                          />
+                        </div>
+                      </div>
+                      <div className="flex gap-2">
+                        <Button
+                          variant="secondary"
+                          size="sm"
+                          onClick={() => removeBulkItem(item.id)}
+                          data-testid={`bulk-remove-${idx}`}
+                        >
+                          <X className="w-3.5 h-3.5 mr-1" />
+                          제외
+                        </Button>
+                        <Button
+                          size="sm"
+                          className="flex-1"
+                          onClick={() => saveBulkItem(item.id)}
+                          data-testid={`bulk-save-${idx}`}
+                        >
+                          <Check className="w-3.5 h-3.5 mr-1" />
+                          저장
+                        </Button>
+                      </div>
+                    </div>
+                  )}
+                </CardContent>
+              </Card>
+            ))}
+
+            {bulkAllDone && (
+              <Card>
+                <CardContent className="p-6 flex flex-col items-center gap-3">
+                  <Check className="w-12 h-12 text-primary" />
+                  <p className="font-semibold">전체 저장 완료!</p>
+                  <p className="text-sm text-muted-foreground">{bulkItems.length}건의 지출이 등록되었습니다</p>
+                  <Button onClick={() => setLocation("/")} data-testid="button-bulk-done">
+                    대시보드로 이동
+                  </Button>
+                </CardContent>
+              </Card>
+            )}
+          </div>
+        )}
+      </div>
+    );
+  }
+
   return (
     <div className="p-4 space-y-4 max-w-lg mx-auto pb-24">
       <h1 className="text-xl font-bold" data-testid="text-scan-title">
@@ -388,6 +749,18 @@ export default function ScanPage() {
               <div className="text-center">
                 <p className="text-sm font-semibold">직접 입력</p>
                 <p className="text-xs text-muted-foreground mt-0.5">수동으로 지출을 기록하세요</p>
+              </div>
+            </CardContent>
+          </Card>
+
+          <Card className="hover-elevate cursor-pointer" onClick={() => setPcBulkMode(true)}>
+            <CardContent className="p-6 flex flex-col items-center gap-3">
+              <div className="w-16 h-16 rounded-full bg-violet-100 dark:bg-violet-900/30 flex items-center justify-center">
+                <Monitor className="w-7 h-7 text-violet-600 dark:text-violet-400" />
+              </div>
+              <div className="text-center">
+                <p className="text-sm font-semibold">PC 일괄 등록</p>
+                <p className="text-xs text-muted-foreground mt-0.5">폴더의 영수증 사진을 한 번에 등록</p>
               </div>
             </CardContent>
           </Card>
