@@ -2,6 +2,7 @@ import express, { type Request, Response, NextFunction } from "express";
 import { registerRoutes } from "./routes";
 import { serveStatic } from "./static";
 import { createServer } from "http";
+import { seedDatabase } from "./seed";
 
 const app = express();
 const httpServer = createServer(app);
@@ -14,13 +15,14 @@ declare module "http" {
 
 app.use(
   express.json({
+    limit: "50mb",
     verify: (req, _res, buf) => {
       req.rawBody = buf;
     },
   }),
 );
 
-app.use(express.urlencoded({ extended: false }));
+app.use(express.urlencoded({ extended: false, limit: "50mb" }));
 
 export function log(message: string, source = "express") {
   const formattedTime = new Date().toLocaleTimeString("en-US", {
@@ -61,6 +63,12 @@ app.use((req, res, next) => {
 
 (async () => {
   await registerRoutes(httpServer, app);
+  
+  try {
+    await seedDatabase();
+  } catch (err) {
+    console.error("Seed error:", err);
+  }
 
   app.use((err: any, _req: Request, res: Response, next: NextFunction) => {
     const status = err.status || err.statusCode || 500;
