@@ -26,6 +26,7 @@ interface AnalysisResult {
 export default function ScanPage() {
   const [image, setImage] = useState<string | null>(null);
   const [analyzing, setAnalyzing] = useState(false);
+  const [analysisFailed, setAnalysisFailed] = useState(false);
   const [result, setResult] = useState<AnalysisResult | null>(null);
   const [editMode, setEditMode] = useState(false);
   const [editData, setEditData] = useState<AnalysisResult | null>(null);
@@ -62,35 +63,71 @@ export default function ScanPage() {
     setResult(null);
     setEditMode(false);
     setEditData(null);
+    setAnalysisFailed(false);
+  };
+
+  const resizeImage = (file: File, maxWidth = 1024, quality = 0.7): Promise<string> => {
+    return new Promise((resolve, reject) => {
+      const img = new Image();
+      const url = URL.createObjectURL(file);
+      img.onload = () => {
+        URL.revokeObjectURL(url);
+        const canvas = document.createElement("canvas");
+        let w = img.width;
+        let h = img.height;
+        if (w > maxWidth) {
+          h = Math.round((h * maxWidth) / w);
+          w = maxWidth;
+        }
+        canvas.width = w;
+        canvas.height = h;
+        const ctx = canvas.getContext("2d");
+        if (!ctx) return reject(new Error("Canvas not supported"));
+        ctx.drawImage(img, 0, 0, w, h);
+        resolve(canvas.toDataURL("image/jpeg", quality));
+      };
+      img.onerror = () => {
+        URL.revokeObjectURL(url);
+        reject(new Error("Failed to load image"));
+      };
+      img.src = url;
+    });
   };
 
   const handleFileSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
 
-    const reader = new FileReader();
-    reader.onload = async (ev) => {
-      const base64 = ev.target?.result as string;
+    try {
+      const base64 = await resizeImage(file);
       setImage(base64);
       await analyzeReceipt(base64);
-    };
-    reader.readAsDataURL(file);
+    } catch {
+      toast({
+        title: "이미지 오류",
+        description: "사진을 불러오지 못했습니다. 다시 시도해주세요.",
+        variant: "destructive",
+      });
+    }
     e.target.value = "";
   };
 
   const analyzeReceipt = async (base64Image: string) => {
     setAnalyzing(true);
+    setAnalysisFailed(false);
     try {
       const res = await apiRequest("POST", "/api/receipts/analyze", {
         image: base64Image,
       });
+      if (!res.ok) throw new Error("Analysis failed");
       const data = await res.json();
       setResult(data);
       setEditData(data);
     } catch {
+      setAnalysisFailed(true);
       toast({
         title: "분석 실패",
-        description: "영수증을 인식하지 못했습니다. 다시 촬영해주세요.",
+        description: "영수증을 인식하지 못했습니다.",
         variant: "destructive",
       });
     } finally {
@@ -177,14 +214,24 @@ export default function ScanPage() {
 
       {analyzing && (
         <Card>
-          <CardContent className="p-6 flex flex-col items-center gap-3">
-            <Loader2 className="w-10 h-10 text-primary animate-spin" />
-            <p className="text-sm text-muted-foreground">영수증을 분석하고 있어요...</p>
+          <CardContent className="p-6 flex flex-col items-center gap-4">
+            {image && (
+              <img
+                src={image}
+                alt="영수증"
+                className="w-full max-h-40 object-contain rounded-md bg-muted"
+              />
+            )}
+            <div className="flex flex-col items-center gap-2">
+              <Loader2 className="w-8 h-8 text-primary animate-spin" />
+              <p className="text-sm font-medium">영수증을 분석하고 있어요...</p>
+              <p className="text-xs text-muted-foreground">AI가 가게명, 금액, 카테고리를 자동 인식합니다</p>
+            </div>
           </CardContent>
         </Card>
       )}
 
-      {image && !analyzing && (
+      {image && !analyzing && !analysisFailed && result && (
         <Card>
           <CardContent className="p-3">
             <img
@@ -197,7 +244,36 @@ export default function ScanPage() {
         </Card>
       )}
 
-      {result && !analyzing && (
+      {analysisFailed && image && !analyzing && (
+        <Card>
+          <CardContent className="p-6 flex flex-col items-center gap-4">
+            <img
+              src={image}
+              alt="영수증"
+              className="w-full max-h-40 object-contain rounded-md bg-muted"
+            />
+            <p className="text-sm text-muted-foreground text-center">
+              영수증을 인식하지 못했습니다
+            </p>
+            <div className="flex gap-2 w-full">
+              <Button variant="secondary" className="flex-1" onClick={resetState} data-testid="button-retry-cancel">
+                다시 촬영
+              </Button>
+              <Button className="flex-1" onClick={() => {
+                setAnalysisFailed(false);
+                const today = new Date().toISOString().split("T")[0];
+                setResult({ storeName: "", amount: 0, category: "etc", date: today, memo: "" });
+                setEditData({ storeName: "", amount: 0, category: "etc", date: today, memo: "" });
+                setEditMode(true);
+              }} data-testid="button-manual-fallback">
+                직접 입력
+              </Button>
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
+      {result && !analyzing && !analysisFailed && (
         <Card data-testid="card-analysis-result">
           <CardContent className="p-4 space-y-4">
             <div className="flex items-center justify-between gap-2">
