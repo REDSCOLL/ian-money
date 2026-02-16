@@ -9,7 +9,7 @@ import { CategoryIcon } from "@/components/category-icon";
 import { formatCurrency, formatFullDate, getCategoryLabel, getCurrentMonth } from "@/lib/utils";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
-import { ChevronLeft, ChevronRight, Trash2 } from "lucide-react";
+import { ChevronLeft, ChevronRight, Trash2, ImageIcon } from "lucide-react";
 import { CATEGORIES } from "@shared/schema";
 import type { Expense } from "@shared/schema";
 
@@ -135,10 +135,21 @@ export default function HistoryPage() {
                         onClick={() => setSelectedExpense(expense)}
                         data-testid={`expense-row-${expense.id}`}
                       >
-                        <CategoryIcon category={expense.category} size="sm" />
+                        {expense.receiptImage ? (
+                          <div className="w-9 h-9 rounded-md overflow-hidden flex-shrink-0 bg-muted">
+                            <img src={expense.receiptImage} alt="" className="w-full h-full object-cover" />
+                          </div>
+                        ) : (
+                          <CategoryIcon category={expense.category} size="sm" />
+                        )}
                         <div className="flex-1 min-w-0">
                           <p className="text-sm truncate">{expense.storeName}</p>
-                          <p className="text-[11px] text-muted-foreground">{getCategoryLabel(expense.category)}</p>
+                          <div className="flex items-center gap-1">
+                            <p className="text-[11px] text-muted-foreground">{getCategoryLabel(expense.category)}</p>
+                            {expense.receiptImage && (
+                              <ImageIcon className="w-3 h-3 text-muted-foreground" />
+                            )}
+                          </div>
                         </div>
                         <p className="text-sm font-semibold whitespace-nowrap">
                           -{formatCurrency(expense.amount)}
@@ -194,20 +205,12 @@ export default function HistoryPage() {
       )}
 
       <Dialog open={!!selectedExpense} onOpenChange={() => setSelectedExpense(null)}>
-        <DialogContent className="max-w-sm">
+        <DialogContent className="max-w-sm max-h-[85vh] overflow-y-auto">
           <DialogHeader>
             <DialogTitle>지출 상세</DialogTitle>
           </DialogHeader>
           {selectedExpense && (
             <div className="space-y-3">
-              {selectedExpense.receiptImage && (
-                <img
-                  src={selectedExpense.receiptImage}
-                  alt="영수증"
-                  className="w-full max-h-40 object-contain rounded-md bg-muted"
-                  data-testid="img-detail-receipt"
-                />
-              )}
               <div className="flex items-center gap-2.5">
                 <CategoryIcon category={selectedExpense.category} />
                 <div className="flex-1 min-w-0">
@@ -231,6 +234,20 @@ export default function HistoryPage() {
                   </div>
                 )}
               </div>
+              {selectedExpense.receiptImage && (
+                <div className="space-y-1.5">
+                  <p className="text-xs font-medium text-muted-foreground flex items-center gap-1">
+                    <ImageIcon className="w-3 h-3" />
+                    첨부 영수증
+                  </p>
+                  <img
+                    src={selectedExpense.receiptImage}
+                    alt="영수증"
+                    className="w-full object-contain rounded-md bg-muted"
+                    data-testid="img-detail-receipt"
+                  />
+                </div>
+              )}
               <Button
                 variant="destructive"
                 className="w-full"
