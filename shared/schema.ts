@@ -1,5 +1,5 @@
 import { sql } from "drizzle-orm";
-import { pgTable, text, varchar, integer, serial, timestamp, date, real } from "drizzle-orm/pg-core";
+import { pgTable, text, varchar, integer, serial, timestamp, date, real, boolean } from "drizzle-orm/pg-core";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
 
@@ -27,6 +27,7 @@ export const settings = pgTable("settings", {
   monthlyBudget: integer("monthly_budget").notNull().default(0),
   payDay: integer("pay_day").notNull().default(1),
   currency: text("currency").notNull().default("KRW"),
+  carryOver: boolean("carry_over").notNull().default(false),
 });
 
 export const insertBudgetSchema = createInsertSchema(budgets).omit({ id: true });
