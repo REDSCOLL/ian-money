@@ -3,6 +3,7 @@ import { createServer, type Server } from "http";
 import { storage } from "./storage";
 import OpenAI from "openai";
 import { z } from "zod";
+import { getBudgetPeriod, getPreviousBudgetPeriod, daysLeftInPeriod } from "@shared/budget-period";
 const openai = new OpenAI({
   apiKey: process.env.AI_INTEGRATIONS_OPENAI_API_KEY,
   baseURL: process.env.AI_INTEGRATIONS_OPENAI_BASE_URL,
@@ -28,16 +29,15 @@ export async function registerRoutes(
 
   app.put("/api/settings", async (req, res) => {
     try {
-      const { monthlyBudget, payDay } = req.body;
+      const { monthlyBudget, payDay, carryOver } = req.body;
       const s = await storage.upsertSettings({
         monthlyBudget: parseInt(monthlyBudget) || 0,
         payDay: parseInt(payDay) || 1,
+        carryOver: carryOver === true || carryOver === "true",
       });
 
-      const now = new Date();
-      const month = now.getMonth() + 1;
-      const year = now.getFullYear();
-      await storage.createOrUpdateBudget(month, year, s.monthlyBudget);
+      const period = getBudgetPeriod(s.payDay);
+      await storage.createOrUpdateBudget(period.periodMonth, period.periodYear, s.monthlyBudget);
 
       res.json(s);
     } catch (error) {
@@ -129,6 +129,99 @@ export async function registerRoutes(
     } catch (error) {
       console.error("Error deleting expense:", error);
       res.status(500).json({ error: "Failed to delete expense" });
+    }
+  });
+
+  app.get("/api/budget-period", async (req, res) => {
+    try {
+      const s = await storage.getSettings();
+      const payDay = s?.payDay || 1;
+      const monthlyBudget = s?.monthlyBudget || 0;
+      const carryOver = s?.carryOver || false;
+
+      const period = getBudgetPeriod(payDay);
+      const expenses = await storage.getExpensesByDateRange(period.startDate, period.endDate);
+      const totalSpent = expenses.reduce((sum, e) => sum + e.amount, 0);
+
+      let carryOverAmount = 0;
+      if (carryOver) {
+        const prevPeriod = getPreviousBudgetPeriod(payDay, period);
+        const prevExpenses = await storage.getExpensesByDateRange(prevPeriod.startDate, prevPeriod.endDate);
+        const prevSpent = prevExpenses.reduce((sum, e) => sum + e.amount, 0);
+        carryOverAmount = Math.max(0, monthlyBudget - prevSpent);
+      }
+
+      const effectiveBudget = monthlyBudget + carryOverAmount;
+      const remaining = effectiveBudget - totalSpent;
+      const daysLeft = daysLeftInPeriod(period.endDate);
+      const dailyBudget = daysLeft > 0 ? Math.floor(remaining / daysLeft) : 0;
+
+      res.json({
+        period,
+        monthlyBudget,
+        carryOver,
+        carryOverAmount,
+        effectiveBudget,
+        totalSpent,
+        remaining,
+        daysLeft,
+        dailyBudget,
+        expenses,
+      });
+    } catch (error) {
+      console.error("Error getting budget period:", error);
+      res.status(500).json({ error: "Failed to get budget period" });
+    }
+  });
+
+  app.get("/api/budget-period/navigate", async (req, res) => {
+    try {
+      const s = await storage.getSettings();
+      const payDay = s?.payDay || 1;
+      const monthlyBudget = s?.monthlyBudget || 0;
+      const carryOver = s?.carryOver || false;
+
+      const refMonth = parseInt(req.query.month as string);
+      const refYear = parseInt(req.query.year as string);
+      const refDay = parseInt(req.query.day as string) || payDay;
+
+      if (isNaN(refMonth) || isNaN(refYear) || refMonth < 1 || refMonth > 12 || refYear < 2000 || refYear > 2100) {
+        return res.status(400).json({ error: "Invalid month or year parameters" });
+      }
+
+      const refDate = new Date(refYear, refMonth - 1, refDay);
+      const period = getBudgetPeriod(payDay, refDate);
+      const expenses = await storage.getExpensesByDateRange(period.startDate, period.endDate);
+      const totalSpent = expenses.reduce((sum, e) => sum + e.amount, 0);
+
+      let carryOverAmount = 0;
+      if (carryOver) {
+        const prevPeriod = getPreviousBudgetPeriod(payDay, period);
+        const prevExpenses = await storage.getExpensesByDateRange(prevPeriod.startDate, prevPeriod.endDate);
+        const prevSpent = prevExpenses.reduce((sum, e) => sum + e.amount, 0);
+        carryOverAmount = Math.max(0, monthlyBudget - prevSpent);
+      }
+
+      const effectiveBudget = monthlyBudget + carryOverAmount;
+      const remaining = effectiveBudget - totalSpent;
+      const daysLeft = daysLeftInPeriod(period.endDate);
+      const dailyBudget = daysLeft > 0 ? Math.floor(remaining / daysLeft) : 0;
+
+      res.json({
+        period,
+        monthlyBudget,
+        carryOver,
+        carryOverAmount,
+        effectiveBudget,
+        totalSpent,
+        remaining,
+        daysLeft,
+        dailyBudget,
+        expenses,
+      });
+    } catch (error) {
+      console.error("Error navigating budget period:", error);
+      res.status(500).json({ error: "Failed to navigate budget period" });
     }
   });
 

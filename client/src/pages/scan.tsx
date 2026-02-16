@@ -78,6 +78,7 @@ export default function ScanPage() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/expenses"] });
       queryClient.invalidateQueries({ queryKey: ["/api/budgets"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/budget-period"] });
       toast({ title: "저장 완료", description: "지출이 기록되었습니다." });
       const savedIdx = savingIndexRef.current;
 
@@ -434,6 +435,7 @@ export default function ScanPage() {
       });
       queryClient.invalidateQueries({ queryKey: ["/api/expenses"] });
       queryClient.invalidateQueries({ queryKey: ["/api/budgets"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/budget-period"] });
       setBulkItems((prev) => {
         const updated = prev.map((b) =>
           b.id === id ? { ...b, status: "saved" as const, expanded: false } : b

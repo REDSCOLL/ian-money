@@ -31,6 +31,7 @@ export default function HistoryPage() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/expenses"] });
       queryClient.invalidateQueries({ queryKey: ["/api/budgets"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/budget-period"] });
       setSelectedExpense(null);
       toast({ title: "삭제 완료" });
     },

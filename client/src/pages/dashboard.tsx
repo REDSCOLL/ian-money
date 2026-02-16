@@ -3,35 +3,43 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Progress } from "@/components/ui/progress";
 import { Skeleton } from "@/components/ui/skeleton";
 import { CategoryIcon } from "@/components/category-icon";
-import { formatCurrency, getCategoryLabel, getCurrentMonth } from "@/lib/utils";
-import { Wallet, TrendingDown, CalendarDays, ArrowRight, Camera } from "lucide-react";
+import { formatCurrency, getCategoryLabel } from "@/lib/utils";
+import { Wallet, TrendingDown, CalendarDays, ArrowRight, Camera, ArrowDownToLine } from "lucide-react";
 import { useLocation } from "wouter";
-import type { Budget, Expense, Settings } from "@shared/schema";
+import type { Expense, Settings } from "@shared/schema";
+import type { BudgetPeriod } from "@shared/budget-period";
+
+interface BudgetPeriodData {
+  period: BudgetPeriod;
+  monthlyBudget: number;
+  carryOver: boolean;
+  carryOverAmount: number;
+  effectiveBudget: number;
+  totalSpent: number;
+  remaining: number;
+  daysLeft: number;
+  dailyBudget: number;
+  expenses: Expense[];
+}
 
 export default function Dashboard() {
-  const { month, year } = getCurrentMonth();
   const [, setLocation] = useLocation();
 
-  const { data: settings, isLoading: settingsLoading } = useQuery<Settings>({
-    queryKey: ["/api/settings"],
+  const { data: periodData, isLoading } = useQuery<BudgetPeriodData>({
+    queryKey: ["/api/budget-period"],
   });
 
-  const { data: budget, isLoading: budgetLoading } = useQuery<Budget>({
-    queryKey: ["/api/budgets", month, year],
-  });
+  const effectiveBudget = periodData?.effectiveBudget || 0;
+  const totalSpent = periodData?.totalSpent || 0;
+  const remaining = periodData?.remaining || 0;
+  const usagePercent = effectiveBudget > 0 ? Math.min((totalSpent / effectiveBudget) * 100, 100) : 0;
+  const expenses = periodData?.expenses || [];
+  const daysLeft = periodData?.daysLeft || 0;
+  const dailyBudget = periodData?.dailyBudget || 0;
+  const carryOverAmount = periodData?.carryOverAmount || 0;
+  const period = periodData?.period;
 
-  const { data: expenses, isLoading: expensesLoading } = useQuery<Expense[]>({
-    queryKey: ["/api/expenses", month, year],
-  });
-
-  const isLoading = settingsLoading || budgetLoading || expensesLoading;
-
-  const totalBudget = budget?.monthlyAmount || settings?.monthlyBudget || 0;
-  const totalSpent = expenses?.reduce((sum, e) => sum + e.amount, 0) || 0;
-  const remaining = totalBudget - totalSpent;
-  const usagePercent = totalBudget > 0 ? Math.min((totalSpent / totalBudget) * 100, 100) : 0;
-
-  const categoryTotals = (expenses || []).reduce(
+  const categoryTotals = expenses.reduce(
     (acc, e) => {
       acc[e.category] = (acc[e.category] || 0) + e.amount;
       return acc;
@@ -43,13 +51,9 @@ export default function Dashboard() {
     .sort(([, a], [, b]) => b - a)
     .slice(0, 5);
 
-  const recentExpenses = [...(expenses || [])].sort(
+  const recentExpenses = [...expenses].sort(
     (a, b) => new Date(b.date).getTime() - new Date(a.date).getTime()
   ).slice(0, 5);
-
-  const today = new Date();
-  const daysLeft = new Date(year, month, 0).getDate() - today.getDate();
-  const dailyBudget = daysLeft > 0 ? Math.floor(remaining / daysLeft) : 0;
 
   if (isLoading) {
     return (
@@ -66,9 +70,13 @@ export default function Dashboard() {
     <div className="p-4 space-y-4 max-w-lg mx-auto pb-24">
       <div className="flex items-center justify-between gap-2">
         <h1 className="text-xl font-bold" data-testid="text-dashboard-title">
-          {month}월 가계부
+          이번 예산 기간
         </h1>
-        <span className="text-sm text-muted-foreground">{year}년</span>
+        {period && (
+          <span className="text-sm text-muted-foreground" data-testid="text-period-label">
+            {period.label}
+          </span>
+        )}
       </div>
 
       <Card data-testid="card-budget-overview">
@@ -78,12 +86,22 @@ export default function Dashboard() {
               <Wallet className="w-4 h-4 text-primary" />
             </div>
             <div className="flex-1 min-w-0">
-              <p className="text-xs text-muted-foreground">이번 달 예산</p>
+              <p className="text-xs text-muted-foreground">예산</p>
               <p className="text-lg font-bold" data-testid="text-total-budget">
-                {formatCurrency(totalBudget)}
+                {formatCurrency(effectiveBudget)}
               </p>
             </div>
           </div>
+
+          {carryOverAmount > 0 && (
+            <div className="flex items-center gap-2 px-2 py-1.5 rounded-md bg-primary/5" data-testid="card-carry-over">
+              <ArrowDownToLine className="w-3.5 h-3.5 text-primary flex-shrink-0" />
+              <span className="text-xs text-muted-foreground">이월잔액</span>
+              <span className="text-xs font-semibold text-primary ml-auto">
+                +{formatCurrency(carryOverAmount)}
+              </span>
+            </div>
+          )}
 
           <Progress value={usagePercent} className="h-2.5" />
 
@@ -162,7 +180,7 @@ export default function Dashboard() {
                       <div
                         className="bg-primary h-1.5 rounded-full transition-all"
                         style={{
-                          width: `${totalBudget > 0 ? (amount / totalBudget) * 100 : 0}%`,
+                          width: `${effectiveBudget > 0 ? (amount / effectiveBudget) * 100 : 0}%`,
                         }}
                       />
                     </div>
@@ -207,12 +225,12 @@ export default function Dashboard() {
         </Card>
       )}
 
-      {(!expenses || expenses.length === 0) && totalBudget > 0 && (
+      {expenses.length === 0 && effectiveBudget > 0 && (
         <Card>
           <CardContent className="p-6 text-center">
             <Camera className="w-10 h-10 text-muted-foreground/50 mx-auto mb-2" />
             <p className="text-sm text-muted-foreground">
-              아직 이번 달 지출 내역이 없어요
+              아직 이번 기간 지출 내역이 없어요
             </p>
             <button
               onClick={() => setLocation("/scan")}
@@ -225,12 +243,12 @@ export default function Dashboard() {
         </Card>
       )}
 
-      {totalBudget === 0 && (
+      {effectiveBudget === 0 && (
         <Card>
           <CardContent className="p-6 text-center">
             <Wallet className="w-10 h-10 text-muted-foreground/50 mx-auto mb-2" />
             <p className="text-sm text-muted-foreground mb-1">
-              먼저 이번 달 예산을 설정해주세요
+              먼저 예산을 설정해주세요
             </p>
             <button
               onClick={() => setLocation("/settings")}

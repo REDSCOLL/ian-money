@@ -10,13 +10,14 @@ import { Switch } from "@/components/ui/switch";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { formatCurrency } from "@/lib/utils";
-import { Wallet, CalendarDays, Save, Moon, Sun, Loader2 } from "lucide-react";
+import { Wallet, CalendarDays, Save, Moon, Sun, Loader2, ArrowDownToLine } from "lucide-react";
 import type { Settings } from "@shared/schema";
 
 export default function SettingsPage() {
   const { toast } = useToast();
   const [monthlyBudget, setMonthlyBudget] = useState("");
   const [payDay, setPayDay] = useState("1");
+  const [carryOver, setCarryOver] = useState(false);
   const [darkMode, setDarkMode] = useState(false);
 
   const { data: settings, isLoading } = useQuery<Settings>({
@@ -27,6 +28,7 @@ export default function SettingsPage() {
     if (settings) {
       setMonthlyBudget(String(settings.monthlyBudget));
       setPayDay(String(settings.payDay));
+      setCarryOver(settings.carryOver);
     }
   }, [settings]);
 
@@ -51,6 +53,7 @@ export default function SettingsPage() {
       const res = await apiRequest("PUT", "/api/settings", {
         monthlyBudget: parseInt(monthlyBudget) || 0,
         payDay: parseInt(payDay) || 1,
+        carryOver,
       });
       return res.json();
     },
@@ -58,6 +61,7 @@ export default function SettingsPage() {
       queryClient.invalidateQueries({ queryKey: ["/api/settings"] });
       queryClient.invalidateQueries({ queryKey: ["/api/budgets"] });
       queryClient.invalidateQueries({ queryKey: ["/api/expenses"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/budget-period"] });
       toast({ title: "저장 완료", description: "설정이 업데이트되었습니다." });
     },
     onError: () => {
@@ -122,6 +126,26 @@ export default function SettingsPage() {
                 ))}
               </SelectContent>
             </Select>
+            <p className="text-[11px] text-muted-foreground mt-1">
+              급여일부터 다음 급여일 전날까지가 예산 기간입니다
+            </p>
+          </div>
+
+          <div className="flex items-center justify-between gap-3 py-1">
+            <div className="flex items-center gap-2.5">
+              <div className="w-9 h-9 rounded-md bg-primary/10 flex items-center justify-center">
+                <ArrowDownToLine className="w-4 h-4 text-primary" />
+              </div>
+              <div>
+                <p className="text-sm font-semibold">이월잔액 합치기</p>
+                <p className="text-[11px] text-muted-foreground">이전 기간 남은 금액을 다음 예산에 합산</p>
+              </div>
+            </div>
+            <Switch
+              checked={carryOver}
+              onCheckedChange={setCarryOver}
+              data-testid="switch-carry-over"
+            />
           </div>
 
           <Button

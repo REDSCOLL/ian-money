@@ -1,14 +1,15 @@
 import { db } from "./db";
 import { budgets, expenses, settings } from "@shared/schema";
 import type { Budget, InsertBudget, Expense, InsertExpense, Settings, InsertSettings } from "@shared/schema";
-import { eq, and, desc, gte, lt } from "drizzle-orm";
+import { eq, and, desc, gte, lte, lt } from "drizzle-orm";
 
 export interface IStorage {
   getSettings(): Promise<Settings | undefined>;
-  upsertSettings(data: { monthlyBudget: number; payDay: number }): Promise<Settings>;
+  upsertSettings(data: { monthlyBudget: number; payDay: number; carryOver?: boolean }): Promise<Settings>;
   getBudget(month: number, year: number): Promise<Budget | undefined>;
   createOrUpdateBudget(month: number, year: number, amount: number): Promise<Budget>;
   getExpenses(month: number, year: number): Promise<Expense[]>;
+  getExpensesByDateRange(startDate: string, endDate: string): Promise<Expense[]>;
   createExpense(data: InsertExpense): Promise<Expense>;
   deleteExpense(id: number): Promise<void>;
 }
@@ -19,19 +20,28 @@ class DatabaseStorage implements IStorage {
     return result;
   }
 
-  async upsertSettings(data: { monthlyBudget: number; payDay: number }): Promise<Settings> {
+  async upsertSettings(data: { monthlyBudget: number; payDay: number; carryOver?: boolean }): Promise<Settings> {
     const existing = await this.getSettings();
     if (existing) {
       const [updated] = await db
         .update(settings)
-        .set({ monthlyBudget: data.monthlyBudget, payDay: data.payDay })
+        .set({
+          monthlyBudget: data.monthlyBudget,
+          payDay: data.payDay,
+          carryOver: data.carryOver ?? existing.carryOver,
+        })
         .where(eq(settings.id, existing.id))
         .returning();
       return updated;
     }
     const [created] = await db
       .insert(settings)
-      .values({ monthlyBudget: data.monthlyBudget, payDay: data.payDay, currency: "KRW" })
+      .values({
+        monthlyBudget: data.monthlyBudget,
+        payDay: data.payDay,
+        currency: "KRW",
+        carryOver: data.carryOver ?? false,
+      })
       .returning();
     return created;
   }
@@ -80,6 +90,19 @@ class DatabaseStorage implements IStorage {
         and(
           gte(expenses.date, startDate),
           lt(expenses.date, endDate),
+        )
+      )
+      .orderBy(desc(expenses.date));
+  }
+
+  async getExpensesByDateRange(startDate: string, endDate: string): Promise<Expense[]> {
+    return db
+      .select()
+      .from(expenses)
+      .where(
+        and(
+          gte(expenses.date, startDate),
+          lte(expenses.date, endDate),
         )
       )
       .orderBy(desc(expenses.date));
