@@ -66,7 +66,7 @@ export default function ScanPage() {
     setAnalysisFailed(false);
   };
 
-  const resizeImage = (file: File, maxWidth = 1024, quality = 0.7): Promise<string> => {
+  const resizeImage = (file: File, maxWidth = 1536, quality = 0.85): Promise<string> => {
     return new Promise((resolve, reject) => {
       const img = new Image();
       const url = URL.createObjectURL(file);
@@ -83,7 +83,23 @@ export default function ScanPage() {
         canvas.height = h;
         const ctx = canvas.getContext("2d");
         if (!ctx) return reject(new Error("Canvas not supported"));
+
+        ctx.imageSmoothingEnabled = true;
+        ctx.imageSmoothingQuality = "high";
         ctx.drawImage(img, 0, 0, w, h);
+
+        const imageData = ctx.getImageData(0, 0, w, h);
+        const d = imageData.data;
+        const contrast = 1.3;
+        const factor = (259 * (contrast * 128 + 255)) / (255 * (259 - contrast * 128));
+        for (let i = 0; i < d.length; i += 4) {
+          for (let c = 0; c < 3; c++) {
+            let val = factor * (d[i + c] - 128) + 128;
+            d[i + c] = val < 0 ? 0 : val > 255 ? 255 : val;
+          }
+        }
+        ctx.putImageData(imageData, 0, 0);
+
         resolve(canvas.toDataURL("image/jpeg", quality));
       };
       img.onerror = () => {
@@ -112,26 +128,34 @@ export default function ScanPage() {
     e.target.value = "";
   };
 
-  const analyzeReceipt = async (base64Image: string) => {
-    setAnalyzing(true);
-    setAnalysisFailed(false);
+  const analyzeReceipt = async (base64Image: string, retryCount = 0) => {
+    if (retryCount === 0) {
+      setAnalyzing(true);
+      setAnalysisFailed(false);
+    }
     try {
       const res = await apiRequest("POST", "/api/receipts/analyze", {
         image: base64Image,
       });
       if (!res.ok) throw new Error("Analysis failed");
       const data = await res.json();
+      if (data.amount === 0 && data.storeName === "알 수 없음" && retryCount === 0) {
+        return await analyzeReceipt(base64Image, 1);
+      }
       setResult(data);
       setEditData(data);
+      setAnalyzing(false);
     } catch {
+      if (retryCount === 0) {
+        return await analyzeReceipt(base64Image, 1);
+      }
+      setAnalyzing(false);
       setAnalysisFailed(true);
       toast({
         title: "분석 실패",
-        description: "영수증을 인식하지 못했습니다.",
+        description: "영수증을 인식하지 못했습니다. 직접 입력하거나 다시 촬영해주세요.",
         variant: "destructive",
       });
-    } finally {
-      setAnalyzing(false);
     }
   };
 

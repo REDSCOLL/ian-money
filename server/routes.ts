@@ -142,48 +142,77 @@ export async function registerRoutes(
 
       const today = new Date().toISOString().split("T")[0];
 
-      const response = await openai.chat.completions.create({
-        model: "gpt-5-mini",
-        messages: [
-          {
-            role: "system",
-            content: `You are a receipt analyzer for a Korean expense tracking app. Analyze the receipt image and extract the following information in JSON format:
-{
-  "storeName": "store/restaurant name",
-  "amount": total amount as integer (no decimals, in KRW),
-  "category": one of ["food", "transport", "shopping", "entertainment", "medical", "education", "utilities", "cafe", "etc"],
-  "date": "YYYY-MM-DD" format,
-  "memo": "brief description of items purchased"
-}
+      const systemPrompt = `You are an expert Korean receipt OCR analyzer. Your task is to extract structured data from receipt images with high accuracy.
 
-Rules:
-- For the category, intelligently classify based on the store name and items
-- If the store is a coffee shop or cafe, use "cafe"
-- If it's a restaurant or food delivery, use "food"
-- If it's a convenience store, use "shopping"
-- If amount can't be determined, use 0
-- If date can't be determined, use "${today}"
-- Keep memo very brief (under 20 characters)
-- Always respond with valid JSON only, no other text`,
-          },
-          {
-            role: "user",
-            content: [
-              {
-                type: "image_url",
-                image_url: { url: image },
-              },
-              {
-                type: "text",
-                text: "이 영수증을 분석해주세요. JSON으로만 응답해주세요.",
-              },
-            ],
-          },
-        ],
-        max_completion_tokens: 500,
-      });
+IMPORTANT INSTRUCTIONS:
+1. Look very carefully at ALL text in the image. Receipts can be blurry, tilted, wrinkled, or partially obscured.
+2. The image might be a Korean receipt (영수증), credit card slip (카드전표), bank transfer confirmation, delivery receipt, or any proof of payment.
+3. Read EVERY line of text systematically from top to bottom.
 
-      const content = response.choices[0]?.message?.content || "{}";
+EXTRACTION RULES:
+- storeName: The business/store name. Usually at the TOP of the receipt in large text. Look for 상호, 가맹점, or the first prominent text. Common patterns: "스타벅스", "CU", "GS25", "배달의민족", "쿠팡이츠", etc.
+- amount: The TOTAL payment amount (합계, 총액, 결제금액, 총합계, 합계금액, 카드결제). This is usually near the BOTTOM. Extract as integer in KRW (no commas, no decimals). If multiple amounts shown, use the final total/payment amount.
+- date: Transaction date (거래일시, 일시, 날짜). Format as YYYY-MM-DD. Look for patterns like 2025.01.15, 2025/01/15, 25.01.15, or 2025년 1월 15일.
+- memo: Brief summary of main items purchased (2-3 key items max, under 20 chars). Look at item lines between store name and total.
+- category: Classify based on store type AND items:
+  * "food" - 식당, 레스토랑, 배달음식, 분식, 치킨, 피자, 한식/중식/일식/양식
+  * "cafe" - 카페, 커피숍 (스타벅스, 투썸플레이스, 이디야, 메가커피, 빽다방, 할리스 etc.)
+  * "transport" - 택시, 버스, 지하철, 주유소, 주차장, 톨게이트, 카카오T
+  * "shopping" - 편의점(CU, GS25, 세븐일레븐), 마트(이마트, 홈플러스, 롯데마트), 백화점, 온라인쇼핑, 의류
+  * "entertainment" - 영화관, 노래방, PC방, 게임, 놀이공원, 스포츠
+  * "medical" - 병원, 약국, 의원, 치과, 한의원
+  * "education" - 학원, 서점, 교재, 강의, 도서
+  * "utilities" - 통신비, 전기, 수도, 가스, 관리비, 보험
+  * "etc" - 위 카테고리에 해당하지 않는 경우
+
+OUTPUT: Respond with ONLY valid JSON, no markdown, no explanation:
+{"storeName":"가게이름","amount":금액,"category":"카테고리","date":"YYYY-MM-DD","memo":"메모"}
+
+If you cannot read the receipt at all, respond: {"storeName":"알 수 없음","amount":0,"category":"etc","date":"${today}","memo":"인식 불가"}`;
+
+      const analyzeWithModel = async (model: string) => {
+        const response = await openai.chat.completions.create({
+          model,
+          messages: [
+            { role: "system", content: systemPrompt },
+            {
+              role: "user",
+              content: [
+                {
+                  type: "image_url",
+                  image_url: { url: image, detail: "high" },
+                },
+                {
+                  type: "text",
+                  text: "이 영수증/결제 내역을 꼼꼼히 읽고 정보를 추출해주세요. 반드시 JSON만 응답하세요.",
+                },
+              ],
+            },
+          ],
+          max_completion_tokens: 800,
+        });
+        return response.choices[0]?.message?.content || "{}";
+      };
+
+      let content: string;
+      try {
+        content = await analyzeWithModel("gpt-5");
+      } catch (primaryError) {
+        console.warn("Primary model failed, trying fallback:", primaryError);
+        try {
+          content = await analyzeWithModel("gpt-5-mini");
+        } catch (fallbackError) {
+          console.warn("Fallback model also failed:", fallbackError);
+          return res.json({
+            storeName: "알 수 없음",
+            amount: 0,
+            category: "etc",
+            date: today,
+            memo: "인식 불가",
+          });
+        }
+      }
+
       let parsed;
       try {
         const jsonMatch = content.match(/\{[\s\S]*\}/);
@@ -194,19 +223,36 @@ Rules:
           amount: 0,
           category: "etc",
           date: today,
-          memo: "",
+          memo: "인식 불가",
         };
       }
 
-      parsed.amount = parseInt(parsed.amount) || 0;
+      const validCategories = ["food", "transport", "shopping", "entertainment", "medical", "education", "utilities", "cafe", "etc"];
+      parsed.amount = parseInt(String(parsed.amount).replace(/[,원\s]/g, "")) || 0;
       if (!parsed.date || !/^\d{4}-\d{2}-\d{2}$/.test(parsed.date)) {
         parsed.date = today;
+      }
+      if (!parsed.storeName || parsed.storeName.trim() === "") {
+        parsed.storeName = "알 수 없음";
+      }
+      if (!validCategories.includes(parsed.category)) {
+        parsed.category = "etc";
+      }
+      if (!parsed.memo) {
+        parsed.memo = "";
       }
 
       res.json(parsed);
     } catch (error) {
       console.error("Error analyzing receipt:", error);
-      res.status(500).json({ error: "Failed to analyze receipt" });
+      const today = new Date().toISOString().split("T")[0];
+      res.json({
+        storeName: "알 수 없음",
+        amount: 0,
+        category: "etc",
+        date: today,
+        memo: "인식 불가",
+      });
     }
   });
 
