@@ -1,0 +1,1 @@
+{"name":"월간 가계부","short_name":"가계부","description":"오프라인 전용 로컬 가계부","start_url":"./","display":"standalone","background_color":"#ffffff","theme_color":"#0d9488","lang":"en","scope":"./","icons":[{"src":"favicon.png","sizes":"512x512","type":"image/png"}]}
