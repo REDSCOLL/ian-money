@@ -18,6 +18,7 @@ export default function SettingsPage() {
   const [monthlyBudget, setMonthlyBudget] = useState("");
   const [payDay, setPayDay] = useState("1");
   const [carryOver, setCarryOver] = useState(false);
+  const [ollamaModel, setOllamaModel] = useState("llama3");
   const [darkMode, setDarkMode] = useState(false);
 
   const { data: settings, isLoading } = useQuery<Settings>({
@@ -29,6 +30,7 @@ export default function SettingsPage() {
       setMonthlyBudget(String(settings.monthlyBudget));
       setPayDay(String(settings.payDay));
       setCarryOver(settings.carryOver);
+      setOllamaModel(settings.ollamaModel || "llama3");
     }
   }, [settings]);
 
@@ -54,6 +56,7 @@ export default function SettingsPage() {
         monthlyBudget: parseInt(monthlyBudget) || 0,
         payDay: parseInt(payDay) || 1,
         carryOver,
+        ollamaModel,
       });
       return res.json();
     },
@@ -163,6 +166,9 @@ export default function SettingsPage() {
           </Button>
         </CardContent>
       </Card>
+
+      {/* AI settings removed for local mode */}
+
 
       <Card>
         <CardContent className="p-4">

@@ -11,7 +11,7 @@ import { queryClient } from "@/lib/queryClient";
 import { CategoryIcon } from "@/components/category-icon";
 import { formatCurrency, getCurrentMonth, getCategoryLabel } from "@/lib/utils";
 import { CATEGORIES } from "@shared/schema";
-import { Camera, Loader2, Check, X, ImageIcon, ReceiptText, ChevronLeft, ChevronRight, Crop, FolderOpen, Monitor, ArrowLeft } from "lucide-react";
+import { Camera, Loader2, Check, X, ImageIcon, ReceiptText, ChevronLeft, ChevronRight, Crop, FolderOpen, Monitor, ArrowLeft, Mic, StopCircle } from "lucide-react";
 import { useLocation } from "wouter";
 
 interface AnalysisResult {
@@ -20,6 +20,7 @@ interface AnalysisResult {
   category: string;
   date: string;
   memo: string;
+  type: "expense" | "income";
 }
 
 interface QueueItem {
@@ -49,9 +50,12 @@ export default function ScanPage() {
   const [pcBulkMode, setPcBulkMode] = useState(false);
   const [bulkItems, setBulkItems] = useState<BulkItem[]>([]);
   const [bulkPreviewImage, setBulkPreviewImage] = useState<string | null>(null);
+  const [isRecording, setIsRecording] = useState(false);
+  const [voiceText, setVoiceText] = useState("");
   const pcFileInputRef = useRef<HTMLInputElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const cameraInputRef = useRef<HTMLInputElement>(null);
+  const manualCameraInputRef = useRef<HTMLInputElement>(null);
   const cropCanvasRef = useRef<HTMLCanvasElement>(null);
   const cropContainerRef = useRef<HTMLDivElement>(null);
   const { toast } = useToast();
@@ -155,35 +159,19 @@ export default function ScanPage() {
     });
   };
 
-  const analyzeReceipt = async (base64Image: string, queueIdx: number, retryCount = 0) => {
+  const analyzeReceipt = async (base64Image: string, queueIdx: number) => {
+    // AI Analysis disabled in local mode
+    const today = new Date().toISOString().split("T")[0];
+    const data: AnalysisResult = { storeName: "", amount: 0, category: "etc", date: today, memo: "", type: "expense" };
     setQueue((prev) => {
       const updated = [...prev];
-      if (updated[queueIdx]) updated[queueIdx] = { ...updated[queueIdx], status: "analyzing" };
+      if (updated[queueIdx]) {
+        updated[queueIdx] = { ...updated[queueIdx], result: data, editData: data, status: "ready" };
+      }
       return updated;
     });
-    try {
-      const res = await apiRequest("POST", "/api/receipts/analyze", { image: base64Image });
-      if (!res.ok) throw new Error("Analysis failed");
-      const data = await res.json();
-      if (data.amount === 0 && data.storeName === "알 수 없음" && retryCount === 0) {
-        return await analyzeReceipt(base64Image, queueIdx, 1);
-      }
-      setQueue((prev) => {
-        const updated = [...prev];
-        if (updated[queueIdx]) {
-          updated[queueIdx] = { ...updated[queueIdx], result: data, editData: data, status: "ready" };
-        }
-        return updated;
-      });
-    } catch {
-      if (retryCount === 0) return await analyzeReceipt(base64Image, queueIdx, 1);
-      setQueue((prev) => {
-        const updated = [...prev];
-        if (updated[queueIdx]) updated[queueIdx] = { ...updated[queueIdx], status: "failed" };
-        return updated;
-      });
-    }
   };
+
 
   const handleGallerySelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = e.target.files;
@@ -301,14 +289,33 @@ export default function ScanPage() {
     const today = new Date().toISOString().split("T")[0];
     const item: QueueItem = {
       image: "",
-      result: { storeName: "", amount: 0, category: "etc", date: today, memo: "" },
-      editData: { storeName: "", amount: 0, category: "etc", date: today, memo: "" },
+      result: { storeName: "", amount: 0, category: "etc", date: today, memo: "", type: "expense" },
+      editData: { storeName: "", amount: 0, category: "etc", date: today, memo: "", type: "expense" },
       status: "ready",
     };
     setQueue([item]);
     setCurrentIndex(0);
     setEditMode(true);
   };
+
+  const handleManualCameraSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    const reader = new FileReader();
+    reader.onload = (event) => {
+      const base64 = event.target?.result as string;
+      setQueue((prev) =>
+        prev.map((item, i) => (i === currentIndex ? { ...item, image: base64 } : item))
+      );
+    };
+    reader.readAsDataURL(file);
+  };
+
+  const handleVoiceInput = () => {
+    toast({ title: "기능 비활성화", description: "로컬 모드에서는 음성 인식을 지원하지 않습니다." });
+  };
+
 
   const handleSave = () => {
     if (!current) return;
@@ -324,8 +331,8 @@ export default function ScanPage() {
       const updated = [...prev];
       updated[currentIndex] = {
         ...updated[currentIndex],
-        result: { storeName: "", amount: 0, category: "etc", date: today, memo: "" },
-        editData: { storeName: "", amount: 0, category: "etc", date: today, memo: "" },
+        result: { storeName: "", amount: 0, category: "etc", date: today, memo: "", type: "expense" },
+        editData: { storeName: "", amount: 0, category: "etc", date: today, memo: "", type: "expense" },
         status: "ready",
       };
       return updated;
@@ -754,6 +761,17 @@ export default function ScanPage() {
               </div>
             </CardContent>
           </Card>
+          <Card className="hover-elevate cursor-pointer" onClick={handleVoiceInput}>
+            <CardContent className="p-6 flex flex-col items-center gap-3">
+              <div className={`w-16 h-16 rounded-full flex items-center justify-center ${isRecording ? "bg-red-100 dark:bg-red-900/30 animate-pulse" : "bg-emerald-100 dark:bg-emerald-900/30"}`}>
+                {isRecording ? <StopCircle className="w-7 h-7 text-red-600" /> : <Mic className="w-7 h-7 text-emerald-600 dark:text-emerald-400" />}
+              </div>
+              <div className="text-center">
+                <p className="text-sm font-semibold">{isRecording ? "듣고 있어요..." : "음성 입력"}</p>
+                <p className="text-xs text-muted-foreground mt-0.5">"점심 만원 썼어"라고 말해보세요</p>
+              </div>
+            </CardContent>
+          </Card>
 
           <Card className="hover-elevate cursor-pointer" onClick={() => setPcBulkMode(true)}>
             <CardContent className="p-6 flex flex-col items-center gap-3">
@@ -968,11 +986,33 @@ export default function ScanPage() {
 
                   {editMode && current.editData ? (
                     <div className="space-y-3">
+                      <div className="flex gap-2">
+                        <Button
+                          type="button"
+                          variant={current.editData.type === "expense" ? "default" : "outline"}
+                          className={`flex-1 ${current.editData.type === "expense" ? "bg-rose-600 hover:bg-rose-700" : ""}`}
+                          onClick={() => updateEditData("type", "expense")}
+                        >
+                          출금 (지출)
+                        </Button>
+                        <Button
+                          type="button"
+                          variant={current.editData.type === "income" ? "default" : "outline"}
+                          className={`flex-1 ${current.editData.type === "income" ? "bg-emerald-600 hover:bg-emerald-700" : ""}`}
+                          onClick={() => {
+                            updateEditData("type", "income");
+                            updateEditData("category", "income");
+                          }}
+                        >
+                          입금 (수입)
+                        </Button>
+                      </div>
                       <div>
-                        <Label className="text-xs text-muted-foreground">가게 이름</Label>
+                        <Label className="text-xs text-muted-foreground">이름 ({current.editData.type === "expense" ? "가게/항목" : "수입원"})</Label>
                         <Input
                           value={current.editData.storeName}
                           onChange={(e) => updateEditData("storeName", e.target.value)}
+                          placeholder={current.editData.type === "expense" ? "예: 스타벅스, 편의점" : "예: 급여, 보너스"}
                           data-testid="input-store-name"
                         />
                       </div>
@@ -1013,7 +1053,6 @@ export default function ScanPage() {
                         />
                       </div>
                       <div>
-                        <Label className="text-xs text-muted-foreground">메모</Label>
                         <Input
                           value={current.editData.memo}
                           onChange={(e) => updateEditData("memo", e.target.value)}
@@ -1021,6 +1060,28 @@ export default function ScanPage() {
                           data-testid="input-memo"
                         />
                       </div>
+
+                      {!current.image && (
+                        <Button 
+                          type="button" 
+                          variant="outline" 
+                          className="w-full border-dashed py-6 flex flex-col gap-1.5 h-auto"
+                          onClick={() => manualCameraInputRef.current?.click()}
+                          data-testid="button-add-receipt-photo"
+                        >
+                          <Camera className="w-5 h-5 text-muted-foreground" />
+                          <span className="text-xs">영수증 사진 추가 (선택사항)</span>
+                        </Button>
+                      )}
+                      
+                      <input
+                        ref={manualCameraInputRef}
+                        type="file"
+                        accept="image/*"
+                        capture="environment"
+                        className="hidden"
+                        onChange={handleManualCameraSelect}
+                      />
                     </div>
                   ) : (
                     <div className="space-y-2.5">

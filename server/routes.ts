@@ -3,16 +3,54 @@ import { createServer, type Server } from "http";
 import { storage } from "./storage";
 import OpenAI from "openai";
 import { z } from "zod";
+import fs from "fs";
+import path from "path";
 import { getBudgetPeriod, getPreviousBudgetPeriod, daysLeftInPeriod } from "@shared/budget-period";
-const openai = new OpenAI({
+const openai = process.env.AI_INTEGRATIONS_OPENAI_API_KEY ? new OpenAI({
   apiKey: process.env.AI_INTEGRATIONS_OPENAI_API_KEY,
   baseURL: process.env.AI_INTEGRATIONS_OPENAI_BASE_URL,
-});
+}) : null;
 
 export async function registerRoutes(
   httpServer: Server,
   app: Express
 ): Promise<Server> {
+  const saveReceiptImage = async (base64Image: string, date: string, storeName: string, amount: number) => {
+    try {
+      if (!base64Image || !base64Image.includes("base64,")) {
+        return base64Image;
+      }
+
+      // Ensure date is folder-friendly (replace dots with dashes)
+      const safeDate = date.replace(/\./g, "-");
+      const baseDir = path.resolve(process.cwd(), "attached_assets", "receipts");
+      const dateDir = path.join(baseDir, safeDate);
+      
+      console.log(`[OCR-SAVE] Attempting to save to: ${dateDir}`);
+      
+      if (!fs.existsSync(dateDir)) {
+        fs.mkdirSync(dateDir, { recursive: true });
+      }
+
+      const parts = base64Image.split("base64,");
+      const base64Data = parts[1];
+      
+      // Clean store name for filename
+      const safeStoreName = storeName.replace(/[\\/:*?"<>|]/g, "").trim() || "unknown";
+      const fileName = `${safeStoreName}_${amount}_${Date.now()}.jpg`;
+      const filePath = path.join(dateDir, fileName);
+      
+      fs.writeFileSync(filePath, base64Data, 'base64');
+      console.log(`[OCR-SAVE] SUCCESS: Saved to ${filePath}`);
+      
+      // Return the public URL path
+      return `/uploads/receipts/${safeDate}/${fileName}`;
+    } catch (err) {
+      console.error("[OCR-SAVE] ERROR:", err);
+      return base64Image;
+    }
+  };
+
   // Settings
   app.get("/api/settings", async (_req, res) => {
     try {
@@ -29,11 +67,12 @@ export async function registerRoutes(
 
   app.put("/api/settings", async (req, res) => {
     try {
-      const { monthlyBudget, payDay, carryOver } = req.body;
+      const { monthlyBudget, payDay, carryOver, ollamaModel } = req.body;
       const s = await storage.upsertSettings({
         monthlyBudget: parseInt(monthlyBudget) || 0,
         payDay: parseInt(payDay) || 1,
         carryOver: carryOver === true || carryOver === "true",
+        ollamaModel: ollamaModel || "llama3",
       });
 
       const period = getBudgetPeriod(s.payDay);
@@ -64,6 +103,20 @@ export async function registerRoutes(
     } catch (error) {
       console.error("Error getting budget:", error);
       res.status(500).json({ error: "Failed to get budget" });
+    }
+  });
+
+  app.get("/api/expenses/range", async (req, res) => {
+    try {
+      const { from, to } = req.query;
+      if (typeof from !== "string" || typeof to !== "string") {
+        return res.status(400).json({ error: "from and to dates are required" });
+      }
+      const expenses = await storage.getExpensesByDateRange(from, to);
+      res.json(expenses);
+    } catch (error) {
+      console.error("Error getting expenses by range:", error);
+      res.status(500).json({ error: "Failed to get expenses" });
     }
   });
 
@@ -105,6 +158,11 @@ export async function registerRoutes(
         budget = await storage.createOrUpdateBudget(month, year, s?.monthlyBudget || 0);
       }
 
+      let finalReceiptImage = receiptImage || null;
+      if (finalReceiptImage && finalReceiptImage.startsWith("data:image")) {
+        finalReceiptImage = await saveReceiptImage(finalReceiptImage, date, storeName, amount);
+      }
+
       const expense = await storage.createExpense({
         budgetId: budget.id,
         storeName,
@@ -112,7 +170,7 @@ export async function registerRoutes(
         category,
         date,
         memo: memo || null,
-        receiptImage: receiptImage || null,
+        receiptImage: finalReceiptImage,
       });
       res.json(expense);
     } catch (error) {
@@ -264,6 +322,7 @@ OUTPUT: Respond with ONLY valid JSON, no markdown, no explanation:
 If you cannot read the receipt at all, respond: {"storeName":"알 수 없음","amount":0,"category":"etc","date":"${today}","memo":"인식 불가"}`;
 
       const analyzeWithModel = async (model: string) => {
+        if (!openai) throw new Error("OpenAI API key not configured");
         const response = await openai.chat.completions.create({
           model,
           messages: [
@@ -287,13 +346,41 @@ If you cannot read the receipt at all, respond: {"storeName":"알 수 없음","a
         return response.choices[0]?.message?.content || "{}";
       };
 
+      const analyzeWithOllama = async (base64Image: string) => {
+        const s = await storage.getSettings();
+        // Use a vision model like llava or moondream
+        const model = "llava"; 
+        
+        // Remove data:image/jpeg;base64, prefix if present
+        const pureBase64 = base64Image.split(",")[1] || base64Image;
+
+        const response = await fetch("http://localhost:11434/api/generate", {
+          method: "POST",
+          body: JSON.stringify({
+            model,
+            prompt: systemPrompt + "\n\n이 영수증 이미지를 분석해서 JSON으로만 응답해줘.",
+            images: [pureBase64],
+            stream: false,
+            format: "json"
+          }),
+        });
+
+        if (!response.ok) throw new Error("Ollama vision failed");
+        const data = await response.json() as { response: string };
+        return data.response;
+      };
+
       let content: string;
       try {
-        content = await analyzeWithModel("gpt-5");
+        if (openai) {
+          content = await analyzeWithModel("gpt-4o-mini");
+        } else {
+          content = await analyzeWithOllama(image);
+        }
       } catch (primaryError) {
-        console.warn("Primary model failed, trying fallback:", primaryError);
+        console.warn("Primary model failed, trying Ollama fallback:", primaryError);
         try {
-          content = await analyzeWithModel("gpt-5-mini");
+          content = await analyzeWithOllama(image);
         } catch (fallbackError) {
           console.warn("Fallback model also failed:", fallbackError);
           return res.json({
@@ -346,6 +433,89 @@ If you cannot read the receipt at all, respond: {"storeName":"알 수 없음","a
         date: today,
         memo: "인식 불가",
       });
+    }
+  });
+
+  app.post("/api/ai/analyze", async (req, res) => {
+    try {
+      const { month, year } = req.body;
+      const expenses = await storage.getExpenses(parseInt(month), parseInt(year));
+      const s = await storage.getSettings();
+      const model = s?.ollamaModel || "llama3";
+
+      if (expenses.length === 0) {
+        return res.json({ report: "분석할 지출 내역이 없습니다." });
+      }
+
+      const summary = expenses.map(e => `- ${e.date}: ${e.storeName} (${e.amount}원, ${e.category})`).join("\n");
+      const total = expenses.reduce((sum, e) => sum + e.amount, 0);
+
+      const prompt = `당신은 전문 자산 관리자이자 금융 분석가입니다. 다음은 사용자의 한 달 지출 내역입니다.
+총 지출: ${total}원
+상세 내역:
+${summary}
+
+이 데이터를 바탕으로 전문적인 재무 분석 보고서를 작성해주세요. 다음 구조를 포함해야 합니다:
+1. 소비 패턴 요약
+2. 긍정적인 점 및 개선이 필요한 점
+3. 구체적인 절약 팁 및 행동 지침
+4. 종합 재무 건강도 평가 (100점 만점)
+
+전문적이면서도 친절한 어조로 한국어로 작성해주세요.`;
+
+      const response = await fetch("http://localhost:11434/api/generate", {
+        method: "POST",
+        body: JSON.stringify({
+          model,
+          prompt,
+          stream: false,
+        }),
+      });
+
+      if (!response.ok) {
+        throw new Error("Ollama connection failed");
+      }
+
+      const data = await response.json() as { response: string };
+      res.json({ report: data.response });
+    } catch (error) {
+      console.error("AI Analysis error:", error);
+      res.status(500).json({ error: "AI 분석 중 오류가 발생했습니다. Ollama가 실행 중인지 확인하세요." });
+    }
+  });
+
+  app.post("/api/ai/parse-voice", async (req, res) => {
+    try {
+      const { text } = req.body;
+      const s = await storage.getSettings();
+      const model = s?.ollamaModel || "llama3";
+      const today = new Date().toISOString().split("T")[0];
+
+      const prompt = `사용자의 음성 입력에서 가계부 지출 정보를 추출해 주세요.
+입력: "${text}"
+오늘 날짜: ${today}
+
+반드시 다음 JSON 형식으로만 응답하세요 (설명 없이 JSON만):
+{"storeName":"가게명","amount":금액(숫자),"category":"food|transport|shopping|entertainment|medical|education|utilities|cafe|etc","date":"YYYY-MM-DD","memo":"간단한 메모"}
+
+만약 정보를 추출할 수 없다면 기본값을 채워주세요.`;
+
+      const response = await fetch("http://localhost:11434/api/generate", {
+        method: "POST",
+        body: JSON.stringify({
+          model,
+          prompt,
+          stream: false,
+          format: "json"
+        }),
+      });
+
+      const data = await response.json() as { response: string };
+      const parsed = JSON.parse(data.response);
+      res.json(parsed);
+    } catch (error) {
+      console.error("AI Voice Parse error:", error);
+      res.status(500).json({ error: "음성 분석 중 오류가 발생했습니다." });
     }
   });
 

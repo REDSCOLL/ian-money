@@ -1,44 +1,89 @@
 import { QueryClient, QueryFunction } from "@tanstack/react-query";
-
-async function throwIfResNotOk(res: Response) {
-  if (!res.ok) {
-    const text = (await res.text()) || res.statusText;
-    throw new Error(`${res.status}: ${text}`);
-  }
-}
+import { clientStorage } from "./storage";
 
 export async function apiRequest(
   method: string,
   url: string,
-  data?: unknown | undefined,
-): Promise<Response> {
-  const res = await fetch(url, {
-    method,
-    headers: data ? { "Content-Type": "application/json" } : {},
-    body: data ? JSON.stringify(data) : undefined,
-    credentials: "include",
-  });
+  data?: any,
+): Promise<any> {
+  // Simple Mock Router
+  if (url === "/api/settings" && (method === "PUT" || method === "PATCH")) {
+    return await clientStorage.upsertSettings(data);
+  }
 
-  await throwIfResNotOk(res);
-  return res;
+  if (url === "/api/expenses" && method === "POST") {
+    return await clientStorage.createExpense(data);
+  }
+
+  if (url === "/api/accounts" && method === "POST") {
+    return await clientStorage.createAccount(data);
+  }
+
+  if (url.startsWith("/api/expenses/") && method === "DELETE") {
+
+    const id = parseInt(url.split("/").pop() || "0");
+    await clientStorage.deleteExpense(id);
+    return { success: true };
+  }
+
+  throw new Error(`Method ${method} on ${url} not implemented in local mode`);
 }
 
-type UnauthorizedBehavior = "returnNull" | "throw";
 export const getQueryFn: <T>(options: {
-  on401: UnauthorizedBehavior;
+  on401: "returnNull" | "throw";
 }) => QueryFunction<T> =
-  ({ on401: unauthorizedBehavior }) =>
+  () =>
   async ({ queryKey }) => {
-    const res = await fetch(queryKey.join("/") as string, {
-      credentials: "include",
-    });
-
-    if (unauthorizedBehavior === "returnNull" && res.status === 401) {
-      return null;
+    const url = queryKey.join("/");
+    
+    if (url === "api/settings") {
+      return await clientStorage.getSettings() as any;
     }
 
-    await throwIfResNotOk(res);
-    return await res.json();
+    if (url === "api/accounts") {
+      return await clientStorage.getAccounts() as any;
+    }
+
+    if (url === "api/accounts/current") {
+      return await clientStorage.getCurrentAccount() as any;
+    }
+
+    if (url === "api/budget-period") {
+
+      return await clientStorage.getBudgetPeriodData() as any;
+    }
+
+    if (url.startsWith("api/budget-period/navigate")) {
+      const fullUrl = new URL(url, "http://localhost");
+      const month = parseInt(fullUrl.searchParams.get("month") || "0");
+      const year = parseInt(fullUrl.searchParams.get("year") || "0");
+      const day = parseInt(fullUrl.searchParams.get("day") || "1");
+      const refDate = new Date(year, month - 1, day);
+      return await clientStorage.getBudgetPeriodData(refDate) as any;
+    }
+
+    if (url.startsWith("api/expenses/range")) {
+      const fullUrl = new URL(url, "http://localhost");
+      const from = fullUrl.searchParams.get("from") || "";
+      const to = fullUrl.searchParams.get("to") || "";
+      return await clientStorage.getExpensesByDateRange(from, to) as any;
+    }
+
+    if (url.startsWith("api/expenses/")) {
+      const parts = url.split("/");
+      const month = parseInt(parts[2]);
+      const year = parseInt(parts[3]);
+      return await clientStorage.getExpenses(month, year) as any;
+    }
+
+    if (url.startsWith("api/budgets/")) {
+      const parts = url.split("/");
+      const month = parseInt(parts[2]);
+      const year = parseInt(parts[3]);
+      return await clientStorage.getBudget(month, year) as any;
+    }
+
+    throw new Error(`GET ${url} not implemented in local mode`);
   };
 
 export const queryClient = new QueryClient({
@@ -55,3 +100,4 @@ export const queryClient = new QueryClient({
     },
   },
 });
+

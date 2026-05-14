@@ -1,5 +1,6 @@
 import express, { type Request, Response, NextFunction } from "express";
 import { registerRoutes } from "./routes";
+import path from "path";
 import { serveStatic } from "./static";
 import { createServer } from "http";
 import { seedDatabase } from "./seed";
@@ -61,6 +62,8 @@ app.use((req, res, next) => {
   next();
 });
 
+app.use("/uploads", express.static(path.resolve(process.cwd(), "attached_assets")));
+
 (async () => {
   await registerRoutes(httpServer, app);
   
@@ -102,7 +105,6 @@ app.use((req, res, next) => {
     {
       port,
       host: "0.0.0.0",
-      reusePort: true,
     },
     () => {
       log(`serving on port ${port}`);

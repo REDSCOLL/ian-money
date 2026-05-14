@@ -3,8 +3,17 @@ import { pgTable, text, varchar, integer, serial, timestamp, date, real, boolean
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
 
+export const accounts = pgTable("accounts", {
+  id: serial("id").primaryKey(),
+  name: text("name").notNull(),
+  type: text("type").notNull().default("budget"), // "budget" (monthly) or "ledger" (balance)
+  initialBalance: integer("initial_balance").notNull().default(0),
+  color: text("color").notNull().default("#0d9488"),
+});
+
 export const budgets = pgTable("budgets", {
   id: serial("id").primaryKey(),
+  accountId: integer("account_id").references(() => accounts.id),
   monthlyAmount: integer("monthly_amount").notNull().default(0),
   payDay: integer("pay_day").notNull().default(1),
   month: integer("month").notNull(),
@@ -13,7 +22,9 @@ export const budgets = pgTable("budgets", {
 
 export const expenses = pgTable("expenses", {
   id: serial("id").primaryKey(),
+  accountId: integer("account_id").references(() => accounts.id),
   budgetId: integer("budget_id").references(() => budgets.id, { onDelete: "cascade" }),
+  type: text("type").notNull().default("expense"), // "expense" or "income"
   storeName: text("store_name").notNull(),
   amount: integer("amount").notNull(),
   category: text("category").notNull().default("etc"),
@@ -24,16 +35,21 @@ export const expenses = pgTable("expenses", {
 
 export const settings = pgTable("settings", {
   id: serial("id").primaryKey(),
+  currentAccountId: integer("current_account_id"),
   monthlyBudget: integer("monthly_budget").notNull().default(0),
   payDay: integer("pay_day").notNull().default(1),
   currency: text("currency").notNull().default("KRW"),
   carryOver: boolean("carry_over").notNull().default(false),
+  ollamaModel: text("ollama_model").notNull().default("llama3"),
 });
 
+export const insertAccountSchema = createInsertSchema(accounts).omit({ id: true });
 export const insertBudgetSchema = createInsertSchema(budgets).omit({ id: true });
 export const insertExpenseSchema = createInsertSchema(expenses).omit({ id: true });
 export const insertSettingsSchema = createInsertSchema(settings).omit({ id: true });
 
+export type Account = typeof accounts.$inferSelect;
+export type InsertAccount = z.infer<typeof insertAccountSchema>;
 export type Budget = typeof budgets.$inferSelect;
 export type InsertBudget = z.infer<typeof insertBudgetSchema>;
 export type Expense = typeof expenses.$inferSelect;
@@ -51,6 +67,8 @@ export const CATEGORIES = [
   { value: "utilities", label: "공과금", icon: "Zap" },
   { value: "cafe", label: "카페", icon: "Coffee" },
   { value: "etc", label: "기타", icon: "MoreHorizontal" },
+  { value: "income", label: "수입", icon: "PlusCircle" },
 ] as const;
 
 export type CategoryValue = typeof CATEGORIES[number]["value"];
+
